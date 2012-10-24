@@ -1,7 +1,9 @@
 package server;
 
+import instruction.BackToMenu;
 import instruction.EndedGame;
 import instruction.Instruction;
+import instruction.MapSent;
 import instruction.ShareModel;
 import instruction.YourTurn;
 
@@ -22,25 +24,18 @@ public class Lounge implements Runnable, Serializable{
 	private boolean _stopGame = false;
 	private boolean _stop = false;
 	
-	private int _serverPort;
 	private Thread _loungeThread;
-	private ServerSocket _loungeSocket;
-	private ArrayList<PlayerThread> _playersList = new ArrayList<PlayerThread>();
+	private ArrayList<ClientThread> _playersList = new ArrayList<ClientThread>();
+	private Server _server;
 	
 	private Model _model = new Model();
 	
 	private String _passwordLounge = null;
 	private String _nameLounge = null;
 	
-	public Lounge(int nbSlots) {
+	public Lounge(int nbSlots, Server serv) {
 		this._slots = nbSlots;
-		
-		try {
-			this._loungeSocket = new ServerSocket(0);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-		this._serverPort = this._loungeSocket.getLocalPort();
+		this._server = serv;
 		
 		this._loungeThread = new Thread(this);
 		this._loungeThread.start();
@@ -48,8 +43,6 @@ public class Lounge implements Runnable, Serializable{
 	
 	@Override
 	public void run() {
-		
-		System.out.println("Ouverture d'un salon sur le port : " + this._serverPort);
 		
 		while(!this._stop)
 		{			
@@ -59,21 +52,8 @@ public class Lounge implements Runnable, Serializable{
 			
 			while(!this._stopGame)
 			{
-				/*
-				 * Waiting for the players.
-				 * The game starts when the lounge is full.
-				 */
-				while(_playersList.size() < _slots)
-				{
-					
-					try {
-						new PlayerThread(_loungeSocket.accept(), this);
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-				}
-				
+				this.waitForBeginning();
+				System.out.println("Fin d'attente." + this.getFreePlaces());
 				/*
 				 * Player list is randomly sort.
 				 */
@@ -83,43 +63,66 @@ public class Lounge implements Runnable, Serializable{
 				 * Initialize the model for all clients.
 				 */
 				this.sendAll(new ShareModel(_model));
+//				this.sendTo(this._playersList.get(0), new YourTurn());
+				
+//				Instruction instruction = null;
+//				instruction = this.listenTo(_playersList.get(0));
+				
+				
+				Instruction instruction = null;
 				
 				for (int j = 0; j < 3; j++) {
 					
 					/*
 					 * A turn
 					 */
-					for (int i = 0; i < _slots; i++) {
+					for (int i = 0; i < this._playersList.size(); i++) {
 						
 						this.sendTo(_playersList.get(i), new YourTurn());
 						
-						Instruction instruction = this.listenTo(_playersList.get(i));				
-						ShareModel m = (ShareModel) instruction;
-						_model = m.getModel();
+						instruction = this.listenTo(_playersList.get(i));
 						
-						this.sendAll(new ShareModel(_model));
-						
+						if(instruction instanceof ShareModel)
+						{
+							ShareModel m = (ShareModel) instruction;
+							_model = m.getModel();
+							
+							this.sendAll(new ShareModel(_model));
+						}
+						else
+						{
+							System.out.println("Wrong instruction.");
+						}						
 					}
 				}
 				
-				this.sendAll(new EndedGame());
-				this._stopGame = true;
+				this.closeGame();
 			}
 		}
 		
 		System.out.println("Lounge ended");
 	}
 	
+	private void closeGame() {
+		this.sendAll(new EndedGame());
+		this._server.bringBackClient(this._playersList);
+		this._stopGame = true;
+	}
+	
+	private void waitForBeginning() {
+		while(this.getFreePlaces() != 0);
+	}
+	
 	/**
-	 * Listen to a {@link PlayerThread} to catch the {@link Instruction} 
-	 * @param client
+	 * Listen to a {@link ClientThread} to catch the {@link Instruction} 
+	 * @param clientThread
 	 * @return {@link Instruction} Instruction sent by a client 
 	 */
-	synchronized public Instruction listenTo(PlayerThread client) {
+	synchronized public Instruction listenTo(ClientThread clientThread) {
 		ObjectInputStream input;
 		Instruction instruction = null;
 		try {
-			input = new ObjectInputStream(client.getSocketClient().getInputStream());
+			input = new ObjectInputStream(clientThread.getSocketClient().getInputStream());
 			instruction = (Instruction) input.readObject();
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -132,29 +135,38 @@ public class Lounge implements Runnable, Serializable{
 	
 	/**
 	 * Add a player to the list.
-	 * @param player {@link PlayerThread}
+	 * @param player {@link ClientThread}
 	 */
-	synchronized public void addPlayer(PlayerThread c) {
-		this._playersList.add(c);
+	synchronized public boolean addPlayer(ClientThread c) {
+		
+		boolean ret = false;
+		
+		if((this._slots - this._playersList.size()) > 0)
+		{
+			this._playersList.add(c);
+			ret = true;
+		}
+		
+		return ret;
 	}
 	
 	/**
-	 * Send the object to all  {@link PlayerThread} connected on the lounge.
+	 * Send the object to all  {@link ClientThread} connected on the lounge.
 	 * @param instruction {@link Instruction}
 	 */
 	synchronized public void sendAll(Instruction instruction)
 	{
-		for (PlayerThread tmp : _playersList) {
+		for (ClientThread tmp : _playersList) {
 			this.sendTo(tmp, instruction);
 		}
 	}
 	
 	/**
 	 * Send the object to the client connected on the lounge.
-	 * @param client {@link PlayerThread}
+	 * @param client {@link ClientThread}
 	 * @param instruction {@link Model}
 	 */
-	synchronized public void sendTo(PlayerThread client, Instruction instruction) {
+	synchronized public void sendTo(ClientThread client, Instruction instruction) {
 		
 		ObjectOutputStream output;
 		try {
@@ -170,6 +182,17 @@ public class Lounge implements Runnable, Serializable{
 	public void closeLounge() {
 		this._stop = true;
 	}
+	
+	/**
+	 * Return true if the password sent by the client match with the official one.
+	 * TODO In the next version, the password will be encrypted.
+	 * 
+	 * @param password
+	 * @return boolean
+	 */
+	public boolean checkPassword(String password) {
+		return (this._passwordLounge == null ||(this._passwordLounge != null && this._passwordLounge.equals(password)));
+	}
 
 	/**
 	 * @return  This function returns the count of how many slot are empty on the server.<br />
@@ -179,7 +202,7 @@ public class Lounge implements Runnable, Serializable{
 		return this._slots - this._playersList.size();
 	}
 	
-	public ArrayList<PlayerThread> getPlayersList() {
+	public ArrayList<ClientThread> getPlayersList() {
 		return _playersList;
 	}
 
@@ -193,10 +216,6 @@ public class Lounge implements Runnable, Serializable{
 	
 	public String getNameLounge() {
 		return this._nameLounge;
-	}
-	
-	public int getServerPort() {
-		return this._serverPort;
 	}
 	
 	public void setNameLounge(String nameLounge) {

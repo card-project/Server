@@ -1,9 +1,12 @@
 package server;
 
+import instruction.ConnectedToLounge;
 import instruction.Disconnection;
 import instruction.GetMap;
 import instruction.Instruction;
+import instruction.JoinLounge;
 import instruction.MapSent;
+import instruction.ShareModel;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -44,6 +47,14 @@ public class ClientThread implements Runnable {
 			else if(instruction instanceof Disconnection)
 			{
 				this._stop = true;
+			}
+			else if(instruction instanceof JoinLounge)
+			{
+				Instruction response = this._server.transfertTo(this, ((JoinLounge)instruction));
+				if(response instanceof ConnectedToLounge)
+					this._stop = true;
+					
+				this.sendInstruction(response);
 			}
 		}
 	}
@@ -86,6 +97,11 @@ public class ClientThread implements Runnable {
 		}
 		
 		return instruction;
+	}
+	
+	public void reinitialize() {
+		_stop = false;
+		this._threadClient.run();
 	}
 	
 }

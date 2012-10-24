@@ -87,7 +87,7 @@ public class Terminal implements Runnable {
 					} while(!priv.equalsIgnoreCase("Y") && !priv.equalsIgnoreCase("N"));
 					
 					ArrayList<Lounge> list = this._serv.getLoungeList();
-					Lounge lounge = new Lounge(nbSlots);
+					Lounge lounge = new Lounge(nbSlots, _serv);
 					 
 					if(priv.equalsIgnoreCase("Y"))
 					{
@@ -127,7 +127,7 @@ public class Terminal implements Runnable {
 							
 							System.out.println(tmp);
 							
-							for (PlayerThread c : it.getPlayersList()) {
+							for (ClientThread c : it.getPlayersList()) {
 								System.out.println(" --> " + c);
 							}
 						}
