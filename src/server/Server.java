@@ -1,27 +1,37 @@
 package server;
 
-import instruction.ConnectedToLounge;
-import instruction.ConnexionFailedLoungeFull;
-import instruction.ConnexionFailedWrongPassword;
-import instruction.Instruction;
-import instruction.JoinLounge;
-import instruction.LoungeNoLongerExists;
-
 import java.io.IOException;
 import java.io.ObjectOutputStream;
-import java.io.Serializable;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Iterator;
 
-import model.Map;
-import model.Model;
-import model.SimplifiedLounge;
+import server.instructions.ConnectedToLounge;
+import server.instructions.ConnexionFailedLoungeFull;
+import server.instructions.ConnexionFailedWrongPassword;
+import server.instructions.Instruction;
+import server.instructions.JoinLounge;
+import server.instructions.LoungeNoLongerExists;
+import server.thread.ClientThread;
+import server.thread.Lounge;
+import server.view.Logger;
+import server.view.Terminal;
 
+/**
+ * Entry point of the server for "1000Bornes" program.
+ * This class manage the users and the lounges.
+ * The server is, by default, running on the port 10000.
+ * 
+ * @author Adrien Saunier
+ * @version 0.3
+ *
+ */
 public class Server {
 
+	// ------------ ATTRIBUTES ------------ //
+	
 	// Keep the list of players
 	private static ArrayList<ClientThread> _waitingPlayers = new ArrayList<ClientThread>();
 
@@ -30,32 +40,42 @@ public class Server {
 
 	// Default size for the lounge
 	private static int _defaultSlots = 6;
+	
+	private static ServerSocket _socketServer = null;
 
+	
+	// ------------ MAIN ------------ //
+	/**
+	 * @param args
+	 * 
+	 * Initialize the server. It defines a default {@link Lounge} and it is waiting for connections from users.
+	 * It manages the switch between the lounges and the waiting list.
+	 */
 	public static void main(String[] args) {
-
-		Integer port = new Integer(10000);
+		
 		Server server = new Server();
 
-		/**
+		/*
 		 * Initialize the default lounge
 		 */
 		Lounge defaultLounge = new Lounge(2, server);
 		defaultLounge.setNameLounge("Default");
-//		defaultLounge.setPassword("Pepito");
-		
 		_loungeList.add(defaultLounge);
-
-		ServerSocket socketServer = null;
+		
+		
+		
 		try {
-			socketServer = new ServerSocket(port);
-			serverInformations(socketServer);
+			_socketServer = new ServerSocket(0);
+			Logger.getInstance().addDelimiter();
+			Logger.getInstance().addEntry(LoggerType.INFO, "Server is running on port " + server.getLocalPort());
+			
+			serverInformations(_socketServer);
 
 			new Terminal(server);
 
 			while (true) {
 				try {
-					_waitingPlayers.add(new ClientThread(socketServer.accept(),server));
-
+					_waitingPlayers.add(new ClientThread(_socketServer.accept(),server));
 				} catch (IOException e) {
 					e.printStackTrace();
 				}
@@ -66,12 +86,15 @@ public class Server {
 		} finally {
 			try {
 				// Closing the main socket
-				socketServer.close();
+				_socketServer.close();
 			} catch (IOException e) {
+				Logger.getInstance().addEntry(LoggerType.CRITICAL, "Impossible to close the Server socket.");
 				e.printStackTrace();
 			}
 		}
 	}
+	
+	// ------------ METHODS ------------ //
 
 	/**
 	 * Display the informations of the server in the terminal;
@@ -102,10 +125,8 @@ public class Server {
 	/**
 	 * Send the object to the client connected on the lounge.
 	 * 
-	 * @param client
-	 *            {@link ClientThread}
-	 * @param instruction
-	 *            {@link Model}
+	 * @param client {@link ClientThread}
+	 * @param instruction {@link Instruction}
 	 */
 	synchronized public void sendTo(ClientThread client, Instruction instruction) {
 
@@ -115,24 +136,61 @@ public class Server {
 					.getOutputStream());
 			output.flush(); // Clean the buffer
 			output.writeObject(instruction);
-			// output.close();
+			
 		} catch (IOException e) {
+			Logger.getInstance().addEntry(LoggerType.WARNING,"Unable to send an Instruction to a client.");
 			e.printStackTrace();
 		}
 	}
 
-	synchronized public ArrayList<Lounge> getLoungeList() {
-		return _loungeList;
-	}
-
+	/**
+	 * Create a lounge with the default number of available slots. 
+	 * 
+	 * @return {@link Lounge}
+	 */
 	synchronized public Lounge createLounge() {
 		return this.createLounge(_defaultSlots);
 	}
 
+	/**
+	 * Create a lounge with the specified number of available slots. 
+	 * 
+	 * @param nbSlots
+	 * @return {@link Lounge}
+	 */
 	synchronized public Lounge createLounge(int nbSlots) {
 		Lounge lounge = new Lounge(nbSlots, this);
 		_loungeList.add(lounge);
+		Logger.getInstance().addEntry("A new lounge has been created.");
 		return lounge;
+	}
+	
+	/**
+	 * When a game is ended, this method is called.
+	 * It brings back the players from the lounge to the waiting list. 
+	 * 
+	 * @param list {@link ArrayList} of {@link ClientThread} 
+	 */
+	synchronized public void bringBackClient(ArrayList<ClientThread> list)
+	{
+		Iterator<ClientThread> iterator = list.iterator();
+		while (iterator.hasNext()) {
+			ClientThread ct = iterator.next();
+			_waitingPlayers.add(new ClientThread(ct.getSocketClient(), this));
+		}
+	}
+	
+	/**
+	 * Remove a player if he is disconnected and add entry to the log file through the {@link Logger} class.
+	 * 
+	 * @param clientThread {@link ClientThread}
+	 */
+	synchronized public void removeDisconnectedClient(ClientThread clientThread) {
+		
+		if(_waitingPlayers.remove(clientThread))
+			Logger.getInstance().addEntry(LoggerType.WARNING, "A player has been removed. Reason : Player unreachable.");
+		
+		
 	}
 
 	/**
@@ -150,17 +208,31 @@ public class Server {
 
 		return list;
 	}
-
+	
+	/**
+	 * Return the list of waiting players.
+	 * 
+	 * @return {@link ArrayList}
+	 */
+	public ArrayList<ClientThread> getWaitingPlayers() {
+		return _waitingPlayers;
+	}
+	
+	/**
+	 * Close all the lounges.
+	 */
 	public void closeLounges() {
 		for (Lounge l : _loungeList) {
 			l.closeLounge();
 		}
 	}
 
-	public static int getDefaultSlots() {
-		return _defaultSlots;
-	}
-
+	/**
+	 * Return a {@link Lounge} if there is a lounge's name matching with the param. 
+	 * 
+	 * @param loungeName {@link String} 
+	 * @return {@link Lounge}
+	 */
 	synchronized public Lounge findLoungeByName(String loungeName) {
 
 		Iterator<Lounge> iterator = null;
@@ -181,29 +253,13 @@ public class Server {
 	}
 
 	/**
-	 * Generate an object which implements {@link Serializable}. The purpose is
-	 * to share an object with the client.
+	 * Try to transfer a {@link ClientThread} to a {@link Lounge} and return the corresponding {@link Instruction}
 	 * 
-	 * @return {@link Map}
+	 * @param c {@link ClientThread}
+	 * @param joinLounge {@link JoinLounge}
+	 * @return {@link Instruction}
 	 */
-	synchronized public Map generateMap() {
-		Map map = new Map();
-		Lounge l = null;
-		Iterator<Lounge> iterator = this.getFreeLounge().iterator();
-		SimplifiedLounge sl = null;
-		while (iterator.hasNext()) {
-
-			l = iterator.next();
-			sl = new SimplifiedLounge(l.getNameLounge(),
-					l.isProtected());
-			map.getLoungeList().add(sl);
-
-		}
-
-		return map;
-	}
-
-	synchronized public Instruction transfertTo(ClientThread c, JoinLounge joinLounge) {
+	synchronized public Instruction transferTo(ClientThread c, JoinLounge joinLounge) {
 
 		Lounge lounge = this.findLoungeByName(joinLounge.getLoungeName());
 
@@ -217,7 +273,7 @@ public class Server {
 				{
 					if (lounge.addPlayer(c))
 					{
-						result = new ConnectedToLounge();
+						result = new ConnectedToLounge(lounge.getPlayersNameList());
 						_waitingPlayers.remove(c);
 					}
 					else
@@ -235,13 +291,21 @@ public class Server {
 		return result;
 	}
 	
-	synchronized public void bringBackClient(ArrayList<ClientThread> list)
-	{
-		Iterator<ClientThread> iterator = list.iterator();
-		while (iterator.hasNext()) {
-			ClientThread ct = iterator.next();
-			ct.reinitialize();
-			_waitingPlayers.add(ct);
-		}
+	// ------------ GETTERS ------------ //
+	
+	synchronized public ArrayList<Lounge> getLoungeList() {
+		return _loungeList;
+	}
+	
+	public static int getDefaultSlots() {
+		return _defaultSlots;
+	}
+	
+	public int getLocalPort() {
+		return _socketServer.getLocalPort();
+	}
+	
+	public String getLocalAdress() throws UnknownHostException {
+		return InetAddress.getLocalHost().getHostAddress();
 	}
 }
